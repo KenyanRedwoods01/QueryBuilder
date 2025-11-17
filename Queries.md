@@ -137,3 +137,235 @@ oard.ts:25–31, 33–43`
 ## Notes
 - All references exclude `productfix` paths.
 - This documentation aligns with Redwoods.md and expands with comments for each query/function and proposed edits.
+
+## Full SQL Blocks And Isolation Changes
+
+### Daily Sale (per day totals)
+```sql
+-- app/Http/Controllers/ReportController.php:270–273 (SQL equivalent)
+SELECT 
+  SUM(total_discount) AS total_discount,
+  SUM(order_discount) AS order_discount,
+  SUM(total_tax) AS total_tax,
+  SUM(order_tax) AS order_tax,
+  SUM(shipping_cost) AS shipping_cost,
+  SUM(grand_total) AS grand_total
+FROM sales
+WHERE DATE(created_at) = :date
+  AND pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id;
+```
+- Change: add `->where('biller_id', $biller_id)` at `app/Http/Controllers/ReportController.php:271`.
+
+### Daily Sale By Warehouse
+```sql
+-- app/Http/Controllers/ReportController.php:332–335 (SQL equivalent)
+SELECT 
+  SUM(total_discount) AS total_discount,
+  SUM(order_discount) AS order_discount,
+  SUM(total_tax) AS total_tax,
+  SUM(order_tax) AS order_tax,
+  SUM(shipping_cost) AS shipping_cost,
+  SUM(grand_total) AS grand_total
+FROM sales
+WHERE DATE(created_at) = :date
+  AND pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id
+  AND warehouse_id = :warehouse_id;
+```
+- Change: add `->where('biller_id', $biller_id)` at `app/Http/Controllers/ReportController.php:333`.
+
+### Sale Report Data (non-warehouse, variant)
+```sql
+-- app/Http/Controllers/ReportController.php:2419–2423 (SQL via join)
+SELECT COALESCE(SUM(ps.total), 0) AS sold_amount
+FROM product_sales ps
+JOIN sales s ON ps.sale_id = s.id
+WHERE ps.product_id = :product_id
+  AND ps.variant_id = :variant_id
+  AND DATE(s.created_at) BETWEEN :start_date AND :end_date
+  AND s.pos_accnt_id = :pos_accnt_id
+  AND s.biller_id = :biller_id;
+
+-- app/Http/Controllers/ReportController.php:2424–2428
+SELECT ps.sale_unit_id, ps.qty
+FROM product_sales ps
+JOIN sales s ON ps.sale_id = s.id
+WHERE ps.product_id = :product_id
+  AND ps.variant_id = :variant_id
+  AND DATE(s.created_at) BETWEEN :start_date AND :end_date
+  AND s.pos_accnt_id = :pos_accnt_id
+  AND s.biller_id = :biller_id;
+```
+- Change: convert `Product_Sale` queries to join `sales` and add `s.biller_id` at the above lines.
+
+### Sale Report Data (warehouse branch, variant)
+```sql
+-- app/Http/Controllers/ReportController.php:2494–2507
+SELECT COALESCE(SUM(ps.total), 0) AS sold_amount
+FROM sales s
+JOIN product_sales ps ON s.id = ps.sale_id
+WHERE ps.product_id = :product_id
+  AND ps.variant_id = :variant_id
+  AND s.warehouse_id = :warehouse_id
+  AND DATE(s.created_at) BETWEEN :start_date AND :end_date
+  AND s.pos_accnt_id = :pos_accnt_id
+  AND s.biller_id = :biller_id;
+
+-- app/Http/Controllers/ReportController.php:2510–2522
+SELECT ps.sale_unit_id, ps.qty
+FROM sales s
+JOIN product_sales ps ON s.id = ps.sale_id
+WHERE ps.product_id = :product_id
+  AND ps.variant_id = :variant_id
+  AND s.warehouse_id = :warehouse_id
+  AND DATE(s.created_at) BETWEEN :start_date AND :end_date
+  AND s.pos_accnt_id = :pos_accnt_id
+  AND s.biller_id = :biller_id;
+```
+- Change: add `->where('sales.biller_id', $biller_id)` in both joins.
+
+### Sale Report Data (warehouse branch, non-variant)
+```sql
+-- app/Http/Controllers/ReportController.php:2545–2550
+SELECT COALESCE(SUM(ps.total), 0) AS sold_amount
+FROM sales s
+JOIN product_sales ps ON s.id = ps.sale_id
+WHERE ps.product_id = :product_id
+  AND s.warehouse_id = :warehouse_id
+  AND DATE(s.created_at) BETWEEN :start_date AND :end_date
+  AND s.pos_accnt_id = :pos_accnt_id
+  AND s.biller_id = :biller_id;
+
+-- app/Http/Controllers/ReportController.php:2551–2557
+SELECT ps.sale_unit_id, ps.qty
+FROM sales s
+JOIN product_sales ps ON s.id = ps.sale_id
+WHERE ps.product_id = :product_id
+  AND s.warehouse_id = :warehouse_id
+  AND DATE(s.created_at) BETWEEN :start_date AND :end_date
+  AND s.pos_accnt_id = :pos_accnt_id
+  AND s.biller_id = :biller_id;
+```
+- Change: add `->where('sales.biller_id', $biller_id)` in both joins.
+
+### Sale Report Chart (rolling sums)
+```sql
+-- app/Http/Controllers/ReportController.php:2641–2656, 2658–2661
+SELECT COALESCE(SUM(ps.qty), 0) AS qty
+FROM sales s
+JOIN product_sales ps ON s.id = ps.sale_id
+WHERE DATE(s.created_at) >= :start_date
+  AND DATE(s.created_at) < :date_point
+  AND s.pos_accnt_id = :pos_accnt_id
+  AND s.biller_id = :biller_id
+  AND (:warehouse_id IS NULL OR s.warehouse_id = :warehouse_id)
+  AND (:product_id IS NULL OR ps.product_id = :product_id);
+```
+- Change: add `->where('sales.biller_id', $biller_id)` and optional `product_id` filter.
+
+### Payment Report By Date
+```sql
+-- app/Http/Controllers/ReportController.php:2695–2698
+SELECT *
+FROM payments
+WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+  AND pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id;
+```
+- Change: add `->where('biller_id', $biller_id)` at `app/Http/Controllers/ReportController.php:2697`.
+
+### Dashboard KPIs (HomeController::dashboardFilter)
+```sql
+-- app/Http/Controllers/HomeController.php:632–679
+SELECT COALESCE(SUM(grand_total - COALESCE(shipping_cost, 0)), 0) AS revenue
+FROM sales
+WHERE pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id
+  AND DATE(created_at) BETWEEN :start_date AND :end_date;
+
+SELECT COALESCE(SUM(grand_total), 0) AS sale_return
+FROM returns
+WHERE pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id
+  AND DATE(created_at) BETWEEN :start_date AND :end_date;
+
+SELECT COALESCE(SUM(grand_total), 0) AS purchase_return
+FROM return_purchases
+WHERE pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id
+  AND DATE(created_at) BETWEEN :start_date AND :end_date;
+
+SELECT COALESCE(SUM(amount), 0) AS expense
+FROM expenses
+WHERE pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id
+  AND DATE(created_at) BETWEEN :start_date AND :end_date;
+
+SELECT COALESCE(SUM(amount), 0) AS income
+FROM incomes
+WHERE pos_accnt_id = :pos_accnt_id
+  AND biller_id = :biller_id
+  AND DATE(created_at) BETWEEN :start_date AND :end_date;
+```
+- Change: add `->where('biller_id', $biller_id)` to each corresponding Eloquent query.
+
+### tRPC Server Router (dashboard.ts)
+```sql
+-- uhaiui/src/server/routers/dashboard.ts:25–43 (Revenue)
+SELECT COALESCE(SUM(grand_total - COALESCE(shipping_cost, 0)), 0) AS revenue
+FROM sales
+WHERE pos_accnt_id = ?
+  AND biller_id = ?
+  AND DATE(created_at) BETWEEN ? AND ?;
+
+-- uhaiui/src/server/routers/dashboard.ts:49–68 (Sale Return)
+SELECT COALESCE(SUM(grand_total), 0) AS sale_return
+FROM returns
+WHERE pos_accnt_id = ?
+  AND biller_id = ?
+  AND DATE(created_at) BETWEEN ? AND ?;
+
+-- uhaiui/src/server/routers/dashboard.ts:74–93 (Purchase Return)
+SELECT COALESCE(SUM(grand_total), 0) AS purchase_return
+FROM return_purchases
+WHERE pos_accnt_id = ?
+  AND biller_id = ?
+  AND DATE(created_at) BETWEEN ? AND ?;
+
+-- uhaiui/src/server/routers/dashboard.ts:116–146 (Loyalty Points)
+SELECT COALESCE(SUM((p.price * ps.qty) - (p.cost * ps.qty)), 0) AS loyalty_points
+FROM sales s
+INNER JOIN product_sales ps ON s.id = ps.sale_id
+INNER JOIN products p ON ps.product_id = p.id
+WHERE s.pos_accnt_id = ?
+  AND s.biller_id = ?
+  AND p.pos_accnt_id = ?
+  AND DATE(s.created_at) BETWEEN ? AND ?
+  AND (? IS NULL OR ps.product_id = ?);
+
+-- uhaiui/src/server/routers/dashboard.ts:170–175 (Warehouses)
+SELECT id, name
+FROM warehouses
+WHERE is_active = 1
+  AND pos_accnt_id = ?
+  AND biller_id = ?
+ORDER BY name ASC;
+```
+- Change: add `biller_id` placeholders and propagate from procedure inputs.
+
+### Blade AJAX Payload Changes
+```js
+// resources/views/backend/report/product_report.blade.php:125–133
+ajax: {
+  url: "product_report_data",
+  data: {
+    start_date: start_date,
+    end_date: end_date,
+    warehouse_id: warehouse_id,
+    product_id: $('#product_id').val(),
+  },
+  type: "post",
+}
+```
+- Change: send `product_id` to backend for individual product filtering.
